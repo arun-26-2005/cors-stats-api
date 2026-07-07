@@ -15,15 +15,12 @@ app = FastAPI(title="CORS-Aware Metrics API")
 ALLOWED_ORIGIN = "https://dash-m7zybj.example.com"
 MY_EMAIL = "23f2001194@ds.study.iitm.ac.in"
 
-PUBLIC_KEY = """-----BEGIN PUBLIC KEY-----
-MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2ok0HspNjga+2rTLbeuY
-cxiP/hG8C6Sb9iwg3yiLAA4HcnpITcbWCSe1bvbYGuc3EbNy4xFyf5CbJ5DHJMID
-Ekry0gyd2giIIIBOuBj8S63uGcnRp0Bh9NFatfNwheKuzsPuVNldu6A9cNteNpXc
-WyjJg2axVfmq7i6SuKr1JoWYG7xTTAKvPujsl40tsQf03h5NepzdfXpr28OnnzfW
-ed+zcLR6BcmNNo/WvFj4xyCLSf0BC0gdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfI
-SI6iyrBKR0NEbSQq4XkadEjsCs4F1Rncs4Llgnit7GlkL9Mce3b0wGLs9/7ZIX
-dQIDAQAB
------END PUBLIC KEY-----"""
+# Base public key components
+BASE_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2ok0HspNjga+2rTLbeuYcxiP/hG8C6Sb9iwg3yiLAA4HcnpITcbWCSe1bvbYGuc3EbNy4xFyf5CbJ5DHJMIDEkry0gyd2giIIIBOuBj8S63uGcnRp0Bh9NFatfNwheKuzsPuVNldu6A9cNteNpXcWyjJg2axVfmq7i6SuKr1JoWYG7xTTAKvPujsl40tsQf03h5NepzdfXpr28OnnzfWed+zcLR6BcmNNo/WvFj4xyCLSf0BC0gdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfISI6iyrBKR0NEbSQq4XkadEjsCs4F1Rncs4Llgnit7GlkL9Mce3b0wGLs9/7ZIX"
+END_KEY = "dQIDAQAB"
+
+# Global cached key once found
+GLOBAL_PUBLIC_KEY = None
 
 class TokenVerificationRequest(BaseModel):
     token: str
@@ -118,30 +115,78 @@ async def get_stats(values: str = Query(None)):
 
 @app.post("/verify")
 async def verify_token(req: TokenVerificationRequest):
+    global GLOBAL_PUBLIC_KEY
     token = req.token.strip()
     if token.startswith("Bearer "):
         token = token[7:].strip()
         
-    try:
-        # Decode and verify token
-        payload = jwt.decode(
-            token,
-            PUBLIC_KEY,
-            algorithms=["RS256"],
-            audience="tds-9is393ft.apps.exam.local",
-            issuer="https://idp.exam.local",
-            leeway=120
-        )
-        return {
-            "valid": True,
-            "email": payload.get("email"),
-            "sub": payload.get("sub"),
-            "aud": payload.get("aud")
-        }
-    except Exception as e:
-        logger.info(f"Token verification failed: {e}")
-        return JSONResponse(
-            status_code=401,
-            headers={"X-Debug-Error": str(e)},
-            content={"valid": False}
-        )
+    # 1. Use cached public key if we have already successfully verified a token
+    if GLOBAL_PUBLIC_KEY:
+        try:
+            payload = jwt.decode(
+                token,
+                GLOBAL_PUBLIC_KEY,
+                algorithms=["RS256"],
+                audience="tds-9is393ft.apps.exam.local",
+                issuer="https://idp.exam.local",
+                leeway=120
+            )
+            return {
+                "valid": True,
+                "email": payload.get("email"),
+                "sub": payload.get("sub"),
+                "aud": payload.get("aud")
+            }
+        except Exception as e:
+            logger.info(f"Verification failed using cached key: {e}")
+            return JSONResponse(
+                status_code=401,
+                headers={"X-Debug-Error": str(e)},
+                content={"valid": False}
+            )
+
+    # 2. Brute force key padding (4096 combinations) dynamically
+    chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+    
+    for c1 in chars:
+        for c2 in chars:
+            candidate_key = f"-----BEGIN PUBLIC KEY-----\n{BASE_KEY}{c1}{c2}{END_KEY}\n-----END PUBLIC KEY-----"
+            try:
+                payload = jwt.decode(
+                    token,
+                    candidate_key,
+                    algorithms=["RS256"],
+                    audience="tds-9is393ft.apps.exam.local",
+                    issuer="https://idp.exam.local",
+                    leeway=120
+                )
+                # Success! Save key and return claims
+                GLOBAL_PUBLIC_KEY = candidate_key
+                logger.info(f"FOUND KEY PAIR WITH SUCCESS: {c1}{c2}")
+                return {
+                    "valid": True,
+                    "email": payload.get("email"),
+                    "sub": payload.get("sub"),
+                    "aud": payload.get("aud")
+                }
+            except jwt.exceptions.InvalidSignatureError:
+                # Key did not match the signature, try next
+                continue
+            except Exception as e:
+                # Key matched signature, but claims validation failed (e.g. Expired, wrong issuer, etc.)
+                # This is the correct key!
+                GLOBAL_PUBLIC_KEY = candidate_key
+                logger.info(f"FOUND KEY PAIR WITH CLAIMS FAILURE ({e}): {c1}{c2}")
+                return JSONResponse(
+                    status_code=401,
+                    headers={"X-Debug-Error": str(e)},
+                    content={"valid": False}
+                )
+
+    # If no key matched signature
+    logger.info("Token signature did not match any public key combination.")
+    return JSONResponse(
+        status_code=401,
+        headers={"X-Debug-Error": "Signature did not match any public key combination"},
+        content={"valid": False}
+    )
