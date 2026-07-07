@@ -120,6 +120,17 @@ async def verify_token(req: TokenVerificationRequest):
     if token.startswith("Bearer "):
         token = token[7:].strip()
         
+    # 0. Validate token structure before anything else
+    try:
+        jwt.decode(token, options={"verify_signature": False})
+    except Exception as e:
+        logger.info(f"Malformed token format: {e}")
+        return JSONResponse(
+            status_code=401,
+            headers={"X-Debug-Error": f"Malformed token: {e}"},
+            content={"valid": False}
+        )
+
     # 1. Use cached public key if we have already successfully verified a token
     if GLOBAL_PUBLIC_KEY:
         try:
