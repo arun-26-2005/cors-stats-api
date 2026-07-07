@@ -118,13 +118,19 @@ async def get_stats(values: str = Query(None)):
 
 @app.post("/verify")
 async def verify_token(req: TokenVerificationRequest):
+    token = req.token.strip()
+    if token.startswith("Bearer "):
+        token = token[7:].strip()
+        
     try:
+        # Decode and verify token
         payload = jwt.decode(
-            req.token,
+            token,
             PUBLIC_KEY,
             algorithms=["RS256"],
             audience="tds-9is393ft.apps.exam.local",
-            issuer="https://idp.exam.local"
+            issuer="https://idp.exam.local",
+            leeway=120
         )
         return {
             "valid": True,
@@ -132,9 +138,10 @@ async def verify_token(req: TokenVerificationRequest):
             "sub": payload.get("sub"),
             "aud": payload.get("aud")
         }
-    except jwt.PyJWTError as e:
+    except Exception as e:
         logger.info(f"Token verification failed: {e}")
         return JSONResponse(
             status_code=401,
+            headers={"X-Debug-Error": str(e)},
             content={"valid": False}
         )
