@@ -500,10 +500,10 @@ async def extract_invoice(request: Request):
     # 1. Extract vendor (Acme-xxxx Industries Ltd. style)
     vendor = "Unknown Vendor"
     # Pattern 1: Hyphenated name followed by capitalized words (stopping at first lowercase word or newline)
-    vendor_match = re.search(r'\b([A-Za-z0-9]+-[a-z0-9]{4,}(?:[ \t]+[A-Z][A-Za-z0-9\.\-]+){0,5})\b', text)
+    vendor_match = re.search(r'\b([A-Za-z0-9]+-[A-Za-z0-9]+(?:[ \t]+[A-Z][A-Za-z0-9\.\-]+){0,5})\b', text)
     if not vendor_match:
         # Pattern 2: Hyphenated name followed by up to 2 words of any case
-        vendor_match = re.search(r'\b([A-Za-z0-9]+-[a-z0-9]{4,}(?:[ \t]+[A-Za-z0-9\.\-]+){0,2})\b', text)
+        vendor_match = re.search(r'\b([A-Za-z0-9]+-[A-Za-z0-9]+(?:[ \t]+[A-Za-z0-9\.\-]+){0,2})\b', text)
     if not vendor_match:
         # Pattern 3: Standard name ending with known suffix (no hyphen)
         vendor_match = re.search(r'\b([A-Za-z0-9\.\-]+(?:[ \t]+[A-Za-z0-9\.\-]+){0,3}?\b(?:Ltd\.?|Corp\.?|Inc\.?|LLC|Co\.?|Industries|Services|Group|Technologies|Solutions|Enterprise|Enterprises|Partners))\b', text, re.IGNORECASE)
