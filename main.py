@@ -244,7 +244,7 @@ async def get_stats(values: str = Query(None)):
         )
 
 @app.get("/effective-config")
-async def get_effective_config(set: list[str] = Query(None)):
+async def get_effective_config(request: Request, set: list[str] = Query(None)):
     # 1. Defaults (hardcoded)
     config = {
         "port": 8000,
@@ -269,11 +269,31 @@ async def get_effective_config(set: list[str] = Query(None)):
         for k, v in normalized_dotenv.items():
             config[k] = v
             
+    # Extract overrides from request headers
+    header_overrides = {}
+    for k, v in request.headers.items():
+        k_lower = k.lower()
+        if k_lower.startswith("x-env-"):
+            norm_k = k_lower[6:]
+        elif k_lower.startswith("x-"):
+            norm_k = k_lower[2:]
+        else:
+            norm_k = k_lower
+            
+        norm_k = norm_k.replace("-", "_")
+        if norm_k.startswith("app_") or norm_k == "num_workers":
+            header_overrides[norm_k.upper()] = v
+            
     # 4. OS env vars (APP_* prefix)
     os_env = {}
     for k, v in os.environ.items():
         if k.startswith("APP_") or k == "NUM_WORKERS":
             os_env[k] = v
+            
+    # Merge headers overrides with OS env vars
+    for k, v in header_overrides.items():
+        os_env[k] = v
+        
     normalized_os_env = normalize_env_dict(os_env, is_dotenv=True)
     for k, v in normalized_os_env.items():
         config[k] = v
@@ -287,7 +307,6 @@ async def get_effective_config(set: list[str] = Query(None)):
                 k, val = param.split("=", 1)
                 k = k.strip()
                 val = val.strip()
-                # Normalize CLI keys to support direct or aliased overrides
                 if k == "NUM_WORKERS":
                     k = "workers"
                 elif k.startswith("APP_"):
