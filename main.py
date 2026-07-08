@@ -4,6 +4,8 @@ import uuid
 import logging
 import jwt
 import redis
+import datetime
+from collections import deque
 from fastapi import FastAPI, Request, Response, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -11,6 +13,11 @@ from pydantic import BaseModel
 # Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# --- Global Observability State ---
+START_TIME = time.time()
+HTTP_REQUESTS_TOTAL = 0
+LOG_BUFFER = deque(maxlen=1000)
 
 app = FastAPI(title="CORS-Aware Metrics API")
 
@@ -117,6 +124,9 @@ class TokenVerificationRequest(BaseModel):
 
 @app.middleware("http")
 async def process_request(request: Request, call_next):
+    global HTTP_REQUESTS_TOTAL
+    HTTP_REQUESTS_TOTAL += 1
+    
     start_time = time.time()
     
     # Generate request ID
@@ -124,6 +134,16 @@ async def process_request(request: Request, call_next):
     
     # CORS Origin check
     origin = request.headers.get("Origin")
+    path = request.url.path
+    
+    # Add structured JSON log entry
+    log_entry = {
+        "level": "INFO",
+        "ts": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+        "path": path,
+        "request_id": request_id
+    }
+    LOG_BUFFER.append(log_entry)
     
     # Preflight Check (OPTIONS)
     if request.method == "OPTIONS":
@@ -304,15 +324,36 @@ def get_count(key: str):
 
 @app.get("/healthz")
 def healthz():
+    uptime_s = time.time() - START_TIME
     try:
         r.ping()
-        return {"status": "ok", "redis": "up"}
-    except Exception as e:
-        logger.error(f"Redis health check failed: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"status": "error", "redis": "down", "detail": str(e)}
-        )
+        redis_status = "up"
+    except Exception:
+        redis_status = "down"
+        
+    return {
+        "status": "ok",
+        "redis": redis_status,
+        "uptime_s": uptime_s
+    }
+
+@app.get("/work")
+def do_work(n: int = Query(0)):
+    total = 0
+    for i in range(n):
+        total += i * i
+    return {"email": MY_EMAIL, "done": n}
+
+@app.get("/metrics")
+def metrics():
+    global HTTP_REQUESTS_TOTAL
+    content = f"# HELP http_requests_total Total number of HTTP requests.\n# TYPE http_requests_total counter\nhttp_requests_total {HTTP_REQUESTS_TOTAL}\n"
+    return Response(content=content, media_type="text/plain")
+
+@app.get("/logs/tail")
+def get_logs_tail(limit: int = Query(10)):
+    logs = list(LOG_BUFFER)
+    return logs[-limit:]
 
 @app.post("/analytics")
 async def post_analytics(request: Request):
