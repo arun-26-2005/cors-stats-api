@@ -131,7 +131,7 @@ async def process_request(request: Request, call_next):
         if origin:
             response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
-            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-ID, X-Process-Time"
+            response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-ID, X-Process-Time, X-API-Key, x-api-key"
             response.headers["Access-Control-Max-Age"] = "600"
         
         # Add required headers
@@ -313,6 +313,65 @@ def healthz():
             status_code=500,
             content={"status": "error", "redis": "down", "detail": str(e)}
         )
+
+@app.post("/analytics")
+async def post_analytics(request: Request):
+    # Verify API key
+    api_key = request.headers.get("x-api-key")
+    if api_key != "ak_cmbytu2wfmxehd9rhcsxnicy":
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Unauthorized"}
+        )
+    
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Invalid JSON body"}
+        )
+        
+    events = body.get("events", [])
+    total_events = len(events)
+    
+    unique_users_set = set()
+    user_totals = {}
+    revenue = 0.0
+    
+    for e in events:
+        user = e.get("user")
+        if user is not None:
+            unique_users_set.add(user)
+            
+        amt = e.get("amount")
+        if amt is not None:
+            try:
+                amt_f = float(amt)
+                if amt_f > 0:
+                    revenue += amt_f
+                    if user is not None:
+                        user_totals[user] = user_totals.get(user, 0.0) + amt_f
+            except (ValueError, TypeError):
+                pass
+                
+    # Find top user
+    top_user = ""
+    max_total = -1.0
+    for user, total in user_totals.items():
+        if total > max_total:
+            max_total = total
+            top_user = user
+            
+    return {
+        "email": MY_EMAIL,
+        "total_events": total_events,
+        "unique_users": len(unique_users_set),
+        "revenue": revenue,
+        "top_user": top_user
+    }
+
+
 
 
 
