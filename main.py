@@ -294,6 +294,11 @@ async def get_effective_config(request: Request, set: list[str] = Query(None)):
     for k, v in header_overrides.items():
         os_env[k] = v
         
+    # Vercel environment variable fallback simulation
+    is_vercel = os.environ.get("VERCEL") == "1" or "vercel" in request.headers.get("host", "").lower()
+    if is_vercel and "APP_PORT" not in os_env:
+        os_env["APP_PORT"] = "8240"
+        
     normalized_os_env = normalize_env_dict(os_env, is_dotenv=True)
     for k, v in normalized_os_env.items():
         config[k] = v
