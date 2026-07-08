@@ -1,3 +1,4 @@
+import os
 import time
 import uuid
 import logging
@@ -14,6 +15,89 @@ app = FastAPI(title="CORS-Aware Metrics API")
 
 ALLOWED_ORIGIN = "https://dash-m7zybj.example.com"
 MY_EMAIL = "23f2001194@ds.study.iitm.ac.in"
+
+# --- 12-Factor Configuration Helpers ---
+
+def coerce_boolean(val) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return False
+
+def coerce_int(val) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        try:
+            return int(float(val))
+        except (ValueError, TypeError):
+            return 0
+
+def parse_env_file(filepath: str) -> dict:
+    env_vars = {}
+    if not os.path.exists(filepath):
+        return env_vars
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, val = line.split("=", 1)
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                    val = val[1:-1]
+                env_vars[key] = val
+    return env_vars
+
+def parse_yaml_file(filepath: str) -> dict:
+    yaml_vars = {}
+    if not os.path.exists(filepath):
+        return yaml_vars
+    with open(filepath, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#") or line.startswith("---"):
+                continue
+            if ":" in line:
+                key, val = line.split(":", 1)
+                key = key.strip()
+                val = val.strip()
+                if len(val) >= 2 and ((val[0] == '"' and val[-1] == '"') or (val[0] == "'" and val[-1] == "'")):
+                    val = val[1:-1]
+                if val.lower() == "true":
+                    val = True
+                elif val.lower() == "false":
+                    val = False
+                elif val.lower() in ("null", "~"):
+                    val = None
+                else:
+                    try:
+                        if "." in val:
+                            val = float(val)
+                        else:
+                            val = int(val)
+                    except ValueError:
+                        pass
+                yaml_vars[key] = val
+    return yaml_vars
+
+def normalize_env_dict(d: dict, is_dotenv: bool = False) -> dict:
+    normalized = {}
+    for k, v in d.items():
+        if is_dotenv and k == "NUM_WORKERS":
+            normalized["workers"] = v
+        elif k.startswith("APP_"):
+            norm_key = k[4:].lower()
+            normalized[norm_key] = v
+        else:
+            normalized[k.lower()] = v
+    return normalized
+
 
 # Base public key components
 BASE_KEY = "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA2ok0HspNjga+2rTLbeuYcxiP/hG8C6Sb9iwg3yiLAA4HcnpITcbWCSe1bvbYGuc3EbNy4xFyf5CbJ5DHJMIDEkry0gyd2giIIIBOuBj8S63uGcnRp0Bh9NFatfNwheKuzsPuVNldu6A9cNteNpXcWyjJg2axVfmq7i6SuKr1JoWYG7xTTAKvPujsl40tsQf03h5NepzdfXpr28OnnzfWed+zcLR6BcmNNo/WvFj4xyCLSf0BC0gdTgW6PdaChd1l9VDetJZVEgC5tkyvXsfISI6iyrBKR0NEbSQq4XkadEjsCs4F1Rncs4Llgnit7GlkL9Mce3b0wGLs9/7ZIX"
@@ -38,8 +122,8 @@ async def process_request(request: Request, call_next):
     # Preflight Check (OPTIONS)
     if request.method == "OPTIONS":
         response = Response(status_code=200)
-        if origin == ALLOWED_ORIGIN:
-            response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+        if origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-ID, X-Process-Time"
             response.headers["Access-Control-Max-Age"] = "600"
@@ -61,8 +145,8 @@ async def process_request(request: Request, call_next):
         )
     
     # Add CORS ACAO header for simple/actual requests if origin matches
-    if origin == ALLOWED_ORIGIN:
-        response.headers["Access-Control-Allow-Origin"] = ALLOWED_ORIGIN
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
         
     # Add required headers
     process_time = time.time() - start_time
@@ -70,6 +154,7 @@ async def process_request(request: Request, call_next):
     response.headers["X-Process-Time"] = f"{process_time:.6f}"
     
     return response
+
 
 @app.get("/stats")
 async def get_stats(values: str = Query(None)):
@@ -112,6 +197,77 @@ async def get_stats(values: str = Query(None)):
             status_code=400,
             content={"detail": "Invalid integer values provided"}
         )
+
+@app.get("/effective-config")
+async def get_effective_config(set: list[str] = Query(None)):
+    # 1. Defaults (hardcoded)
+    config = {
+        "port": 8000,
+        "workers": 1,
+        "debug": False,
+        "log_level": "info",
+        "api_key": "default-secret-000"
+    }
+    
+    # 2. Environment-specific YAML
+    env = os.environ.get("ENV") or os.environ.get("APP_ENV") or "development"
+    yaml_filename = f"config.{env}.yaml"
+    if os.path.exists(yaml_filename):
+        yaml_config = parse_yaml_file(yaml_filename)
+        for k, v in yaml_config.items():
+            config[k.lower()] = v
+            
+    # 3. .env file
+    if os.path.exists(".env"):
+        dotenv_config = parse_env_file(".env")
+        normalized_dotenv = normalize_env_dict(dotenv_config, is_dotenv=True)
+        for k, v in normalized_dotenv.items():
+            config[k] = v
+            
+    # 4. OS env vars (APP_* prefix)
+    os_env = {}
+    for k, v in os.environ.items():
+        if k.startswith("APP_") or k == "NUM_WORKERS":
+            os_env[k] = v
+    normalized_os_env = normalize_env_dict(os_env, is_dotenv=True)
+    for k, v in normalized_os_env.items():
+        config[k] = v
+        
+    # 5. CLI overrides (?set=key=value)
+    cli_overrides = {}
+    if set and (isinstance(set, list) or isinstance(set, str)):
+        params_list = set if isinstance(set, list) else [set]
+        for param in params_list:
+            if "=" in param:
+                k, val = param.split("=", 1)
+                k = k.strip()
+                val = val.strip()
+                # Normalize CLI keys to support direct or aliased overrides
+                if k == "NUM_WORKERS":
+                    k = "workers"
+                elif k.startswith("APP_"):
+                    k = k[4:].lower()
+                else:
+                    k = k.lower()
+                cli_overrides[k] = val
+    for k, v in cli_overrides.items():
+        config[k] = v
+        
+    # Type Coercion Rules
+    final_config = {
+        "port": coerce_int(config.get("port", 8000)),
+        "workers": coerce_int(config.get("workers", 1)),
+        "debug": coerce_boolean(config.get("debug", False)),
+        "log_level": str(config.get("log_level", "info")),
+        "api_key": str(config.get("api_key", "default-secret-000"))
+    }
+    
+    # Secret masking in the response JSON
+    response_config = dict(final_config)
+    response_config["api_key"] = "****"
+    
+    return response_config
+
 
 @app.post("/verify")
 async def verify_token(req: TokenVerificationRequest):
