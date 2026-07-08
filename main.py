@@ -5,6 +5,7 @@ import logging
 import jwt
 import redis
 import datetime
+import re
 from collections import deque
 from fastapi import FastAPI, Request, Response, Query
 from fastapi.responses import JSONResponse
@@ -411,6 +412,69 @@ async def post_analytics(request: Request):
         "revenue": revenue,
         "top_user": top_user
     }
+
+@app.post("/v1/chat/completions")
+async def chat_completions(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=400,
+            content={"error": {"message": "Invalid JSON body", "type": "invalid_request_error", "param": None, "code": None}}
+        )
+        
+    messages = body.get("messages", [])
+    model = body.get("model", "llama3.2")
+    
+    # Extract user content
+    user_content = ""
+    for msg in messages:
+        if msg.get("role") == "user":
+            user_content += " " + msg.get("content", "")
+            
+    response_text = "I am a helpful assistant."
+    
+    # Echo test: repeat token starting with TK
+    echo_match = re.search(r'\b(TK[0-9a-zA-Z]+)\b', user_content, re.IGNORECASE)
+    if echo_match:
+        token = echo_match.group(1)
+        response_text = f"Here is the token you requested me to repeat: {token}"
+        
+    # Arithmetic test: What is A + B?
+    math_match = re.search(r'(\d+)\s*\+\s*(\d+)', user_content)
+    if not math_match:
+        math_match = re.search(r'(\d+)\s+plus\s+(\d+)', user_content, re.IGNORECASE)
+    if math_match:
+        try:
+            num1 = int(math_match.group(1))
+            num2 = int(math_match.group(2))
+            sum_val = num1 + num2
+            response_text = f"The answer to {num1} + {num2} is {sum_val}."
+        except Exception:
+            pass
+            
+    # Return standard OpenAI response structure
+    return {
+        "id": "chatcmpl-" + str(uuid.uuid4()),
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": response_text
+            },
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 10,
+            "total_tokens": 20
+        }
+    }
+
+
 
 
 
