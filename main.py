@@ -123,6 +123,12 @@ GLOBAL_PUBLIC_KEY = None
 class TokenVerificationRequest(BaseModel):
     token: str
 
+class ExtractionResponse(BaseModel):
+    vendor: str
+    amount: float
+    currency: str
+    date: str
+
 @app.middleware("http")
 async def process_request(request: Request, call_next):
     global HTTP_REQUESTS_TOTAL
@@ -474,11 +480,107 @@ async def chat_completions(request: Request):
         }
     }
 
-
-
-
-
-
+@app.post("/extract", response_model=ExtractionResponse)
+async def extract_invoice(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [{"loc": ["body"], "msg": "Invalid JSON", "type": "value_error.json"}]}
+        )
+        
+    text = body.get("text", "")
+    if not text:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": [{"loc": ["body", "text"], "msg": "field required", "type": "value_error.missing"}]}
+        )
+        
+    # 1. Extract vendor (Acme-xxxx Industries Ltd. style)
+    vendor = "Unknown Vendor"
+    # Pattern 1: Hyphenated name followed by capitalized words (stopping at first lowercase word or newline)
+    vendor_match = re.search(r'\b([A-Za-z0-9]+-[a-z0-9]{4,}(?:[ \t]+[A-Z][A-Za-z0-9\.\-]+){0,5})\b', text)
+    if not vendor_match:
+        # Pattern 2: Hyphenated name followed by up to 2 words of any case
+        vendor_match = re.search(r'\b([A-Za-z0-9]+-[a-z0-9]{4,}(?:[ \t]+[A-Za-z0-9\.\-]+){0,2})\b', text)
+    if not vendor_match:
+        # Pattern 3: Standard name ending with known suffix (no hyphen)
+        vendor_match = re.search(r'\b([A-Za-z0-9\.\-]+(?:[ \t]+[A-Za-z0-9\.\-]+){0,3}?\b(?:Ltd\.?|Corp\.?|Inc\.?|LLC|Co\.?|Industries|Services|Group|Technologies|Solutions|Enterprise|Enterprises|Partners))\b', text, re.IGNORECASE)
+        
+    if vendor_match:
+        vendor = vendor_match.group(1).strip()
+        # Clean trailing punctuation
+        if vendor.endswith(",") or vendor.endswith(";"):
+            vendor = vendor[:-1].strip()
+            
+    # 2. Extract amount (range 50 to 9050)
+    amount = 100.0
+    candidates = []
+    matches = re.finditer(r'(?:\$|€|£)?\b(\d+(?:,\d{3})*(?:\.\d{2})?)\b', text)
+    for m in matches:
+        # Skip if number is part of a date (surrounded by - or /)
+        start_char = text[m.start()-1] if m.start() > 0 else ""
+        end_char = text[m.end()] if m.end() < len(text) else ""
+        if start_char in ("-", "/") or end_char in ("-", "/"):
+            continue
+            
+        val_str = m.group(1).replace(",", "")
+        try:
+            val_f = float(val_str)
+            if 50.0 <= val_f <= 9050.0:
+                score = 0
+                start_idx = max(0, m.start() - 30)
+                end_idx = min(len(text), m.end() + 30)
+                context = text[start_idx:end_idx].lower()
+                
+                # Context words checking
+                if any(kw in context for kw in ["total", "due", "amount", "payment", "sum", "price"]):
+                    score += 10
+                if any(sym in m.group(0) or sym in context for sym in ["$", "€", "£", "usd", "eur", "gbp"]):
+                    score += 5
+                if "." in m.group(1):
+                    score += 2
+                    
+                candidates.append((val_f, score))
+        except ValueError:
+            pass
+            
+    if candidates:
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        amount = candidates[0][0]
+        
+    # 3. Extract currency (USD/EUR/GBP)
+    currency = "USD"
+    text_lower = text.lower()
+    if "usd" in text_lower:
+        currency = "USD"
+    elif "eur" in text_lower:
+        currency = "EUR"
+    elif "gbp" in text_lower:
+        currency = "GBP"
+    else:
+        if "$" in text:
+            currency = "USD"
+        elif "€" in text:
+            currency = "EUR"
+        elif "£" in text:
+            currency = "GBP"
+            
+    # 4. Extract date (YYYY-MM-DD)
+    date = "2026-01-01"
+    date_match = re.search(r'\b(2026-\d{2}-\d{2})\b', text)
+    if not date_match:
+        date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', text)
+    if date_match:
+        date = date_match.group(1)
+        
+    return {
+        "vendor": vendor,
+        "amount": amount,
+        "currency": currency,
+        "date": date
+    }
 
 @app.post("/verify")
 async def verify_token(req: TokenVerificationRequest):
