@@ -3,6 +3,7 @@ import time
 import uuid
 import logging
 import jwt
+import redis
 from fastapi import FastAPI, Request, Response, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -12,6 +13,11 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="CORS-Aware Metrics API")
+
+# --- Redis Client Initialization ---
+REDIS_HOST = os.environ.get("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
+r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 ALLOWED_ORIGIN = "https://dash-m7zybj.example.com"
 MY_EMAIL = "23f2001194@ds.study.iitm.ac.in"
@@ -267,6 +273,47 @@ async def get_effective_config(set: list[str] = Query(None)):
     response_config["api_key"] = "****"
     
     return response_config
+
+
+# --- Redis Counter Endpoints ---
+
+@app.post("/hit/{key}")
+def hit_key(key: str):
+    try:
+        count = r.incr(key)
+        return {"key": key, "count": count}
+    except Exception as e:
+        logger.error(f"Failed to increment key {key}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Redis error: {e}"}
+        )
+
+@app.get("/count/{key}")
+def get_count(key: str):
+    try:
+        val = r.get(key)
+        count = int(val) if val is not None else 0
+        return {"key": key, "count": count}
+    except Exception as e:
+        logger.error(f"Failed to get key {key}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Redis error: {e}"}
+        )
+
+@app.get("/healthz")
+def healthz():
+    try:
+        r.ping()
+        return {"status": "ok", "redis": "up"}
+    except Exception as e:
+        logger.error(f"Redis health check failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"status": "error", "redis": "down", "detail": str(e)}
+        )
+
 
 
 @app.post("/verify")
