@@ -148,15 +148,23 @@ async def process_request(request: Request, call_next):
         "level": "INFO",
         "ts": datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "path": path,
-        "request_id": request_id
+        "request_id": request_id,
+        "headers": dict(request.headers)
     }
     LOG_BUFFER.append(log_entry)
+    
+    allowed_origin = os.environ.get("ALLOWED_ORIGIN", ALLOWED_ORIGIN)
+    is_stats_path = path == "/stats" or path.startswith("/stats/")
     
     # Preflight Check (OPTIONS)
     if request.method == "OPTIONS":
         response = Response(status_code=200)
         if origin:
-            response.headers["Access-Control-Allow-Origin"] = origin
+            if is_stats_path:
+                if origin == allowed_origin:
+                    response.headers["Access-Control-Allow-Origin"] = allowed_origin
+            else:
+                response.headers["Access-Control-Allow-Origin"] = origin
             response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
             response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Request-ID, X-Process-Time, X-API-Key, x-api-key"
             response.headers["Access-Control-Max-Age"] = "600"
@@ -179,7 +187,11 @@ async def process_request(request: Request, call_next):
     
     # Add CORS ACAO header for simple/actual requests if origin matches
     if origin:
-        response.headers["Access-Control-Allow-Origin"] = origin
+        if is_stats_path:
+            if origin == allowed_origin:
+                response.headers["Access-Control-Allow-Origin"] = allowed_origin
+        else:
+            response.headers["Access-Control-Allow-Origin"] = origin
         
     # Add required headers
     process_time = time.time() - start_time
