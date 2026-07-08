@@ -331,17 +331,20 @@ def get_count(key: str):
 
 @app.get("/healthz")
 def healthz():
-    uptime_s = time.time() - START_TIME
     try:
+        # Ping Redis
         r.ping()
         redis_status = "up"
-    except Exception:
+    except Exception as e:
         redis_status = "down"
         
+    uptime_s = time.time() - START_TIME
+    debug_env = {k: v for k, v in os.environ.items() if "PORT" in k or "APP_" in k or "WORKER" in k}
     return {
         "status": "ok",
         "redis": redis_status,
-        "uptime_s": uptime_s
+        "uptime_s": uptime_s,
+        "debug_env": debug_env
     }
 
 @app.get("/work")
